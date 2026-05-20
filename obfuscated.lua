@@ -1180,27 +1180,20 @@ local function Build(prefillKey, prefillFromSaved)
                 getgenv().SCRIPT_KEY = key
 				getgenv().INERTIA_KEY = key
 				task.spawn(function()
-					local loaderPath = "roblox/inertia_game_loader.lua"
-					local fn
-					if isfile and readfile and isfile(loaderPath) then
-						local src = readfile(loaderPath)
-						fn = loadstring(src)
-					else
-						local url =
-							(getgenv and getgenv().INERTIA_GAME_LOADER_URL)
-							or "https://gist.githubusercontent.com/JustKondzio0010/1b8107f2889146cc991db0541c9a880d/raw/4b17bb0ede2e533ad4144edacd1b6dd2c9710300/INERTIALOADER"
-						if type(url) == "string" and url ~= "" then
-							local ok, src = pcall(function()
-								return game:HttpGet(url, true)
-							end)
-							if ok and type(src) == "string" and src ~= "" then
-								fn = loadstring(src)
-							end
-						end
+					local url =
+						(getgenv and getgenv().INERTIA_GAME_LOADER_URL)
+						or "https://gist.githubusercontent.com/JustKondzio0010/1b8107f2889146cc991db0541c9a880d/raw/4b17bb0ede2e533ad4144edacd1b6dd2c9710300/INERTIALOADER"
+					local ok, src = pcall(function()
+						return game:HttpGet(url, true)
+					end)
+					if not ok or type(src) ~= "string" or src == "" then
+						return
 					end
-					if type(fn) == "function" then
-						pcall(fn)
+					local fn = loadstring(src)
+					if type(fn) ~= "function" then
+						return
 					end
+					pcall(fn)
 				end)
                 SetStatus("success")
 				local left = result.data and result.data.time_left_seconds
