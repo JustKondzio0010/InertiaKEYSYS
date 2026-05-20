@@ -1180,6 +1180,123 @@ local function Build(prefillKey, prefillFromSaved)
                 getgenv().SCRIPT_KEY = key
 				getgenv().INERTIA_KEY = key
 				task.spawn(function()
+					local function ensureSecureLoader()
+						if not writefile or not isfile then
+							return
+						end
+						if makefolder and isfolder and not isfolder("roblox") then
+							pcall(function()
+								makefolder("roblox")
+							end)
+						end
+						local p = "roblox/inertia_secure_loader.lua"
+						if isfile(p) then
+							return
+						end
+						local src = [[
+local HttpService = game:GetService("HttpService")
+local Players = game:GetService("Players")
+local API_URL = (getgenv and getgenv().INERTIA_API_URL) or "https://ezkeys.wtf"
+local function getRequest()
+	return (syn and syn.request) or (http and http.request) or http_request or request
+end
+local function generateHWID()
+	return game:GetService("RbxAnalyticsService"):GetClientId()
+end
+local function generateFingerprint()
+	local player = Players.LocalPlayer
+	return HttpService:JSONEncode({
+		UserId = player.UserId,
+		AccountAge = player.AccountAge,
+		MembershipType = tostring(player.MembershipType),
+		Locale = player.LocaleId
+	})
+end
+local function verifyKey(key)
+	local req = getRequest()
+	if type(req) ~= "function" then
+		return false
+	end
+	local payload = HttpService:JSONEncode({
+		key = tostring(key or ""):upper(),
+		hwid = generateHWID(),
+		ip = "roblox_client",
+		fingerprint = generateFingerprint(),
+		roblox_user_id = Players.LocalPlayer and Players.LocalPlayer.UserId or nil
+	})
+	local ok, res = pcall(function()
+		return req({
+			Url = API_URL .. "/api/verify",
+			Method = "POST",
+			Headers = { ["Content-Type"] = "application/json" },
+			Body = payload
+		})
+	end)
+	if not ok or not res then
+		return false
+	end
+	local body = res.Body or res.body or ""
+	local decodedOk, data = pcall(function()
+		return HttpService:JSONDecode(body)
+	end)
+	if not decodedOk or type(data) ~= "table" then
+		return false
+	end
+	if tonumber(res.StatusCode or res.Status or 200) >= 400 then
+		return false
+	end
+	return data.valid == true
+end
+local function fetch(url)
+	local req = getRequest()
+	if type(req) == "function" then
+		local ok, res = pcall(function()
+			return req({
+				Url = tostring(url),
+				Method = "GET"
+			})
+		end)
+		if ok and res and (res.Body or res.body) then
+			return tostring(res.Body or res.body)
+		end
+	end
+	local ok, src = pcall(function()
+		return game:HttpGet(tostring(url), true)
+	end)
+	if ok then
+		return src
+	end
+	return nil
+end
+local function run()
+	local g = getgenv and getgenv() or {}
+	local key = tostring(g.SCRIPT_KEY or g.INERTIA_KEY or "")
+	local url = tostring(g.INERTIA_TARGET_URL or "")
+	if key == "" or url == "" then
+		return
+	end
+	if not verifyKey(key) then
+		return
+	end
+	local src = fetch(url)
+	if type(src) ~= "string" or src == "" then
+		return
+	end
+	local fn = loadstring(src)
+	if type(fn) ~= "function" then
+		return
+	end
+	return fn()
+end
+return run()
+]]
+						pcall(function()
+							writefile(p, src)
+						end)
+					end
+
+					ensureSecureLoader()
+
 					local url =
 						(getgenv and getgenv().INERTIA_GAME_LOADER_URL)
 						or "https://gist.githubusercontent.com/JustKondzio0010/1b8107f2889146cc991db0541c9a880d/raw/4b17bb0ede2e533ad4144edacd1b6dd2c9710300/INERTIALOADER"
@@ -1194,6 +1311,20 @@ local function Build(prefillKey, prefillFromSaved)
 						return
 					end
 					pcall(fn)
+
+					task.delay(0.2, function()
+						local g = getgenv and getgenv() or {}
+						local scripts = g and g.INERTIA_GAME_SCRIPTS
+						local supported = type(scripts) == "table" and scripts[game.PlaceId] ~= nil
+						if not supported then
+							pcall(function()
+								local lp = game:GetService("Players").LocalPlayer
+								if lp and lp.Kick then
+									lp:Kick("Inertia: This game is not supported (PlaceId: " .. tostring(game.PlaceId) .. ")")
+								end
+							end)
+						end
+					end)
 				end)
                 SetStatus("success")
 				local left = result.data and result.data.time_left_seconds
