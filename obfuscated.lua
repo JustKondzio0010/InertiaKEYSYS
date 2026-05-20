@@ -1203,7 +1203,6 @@ local function Build(prefillKey, prefillFromSaved)
 					end
 				end)
                 SetStatus("success")
-				print("key works fine")
 				local left = result.data and result.data.time_left_seconds
 				if left ~= nil then
 					local text = "Key verified • " .. formatTimeLeft(left) .. " left"
