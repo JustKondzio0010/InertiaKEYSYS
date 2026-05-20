@@ -89,6 +89,106 @@ local function check_key(key)
 	return {valid = false, message = data.error or data.message or "Invalid key"}
 end
 
+local function fetchUrl(url)
+	local req = getRequest()
+	if type(req) == "function" then
+		local ok, res = pcall(function()
+			return req({ Url = tostring(url), Method = "GET" })
+		end)
+		if ok and res and (res.Body or res.body) then
+			return tostring(res.Body or res.body)
+		end
+	end
+
+	local ok, body = pcall(function()
+		return game:HttpGet(tostring(url), true)
+	end)
+	if ok then
+		return body
+	end
+	return nil
+end
+
+local function kickPlayer(msg)
+	pcall(function()
+		local lp = Players.LocalPlayer
+		if lp and lp.Kick then
+			lp:Kick(tostring(msg))
+		end
+	end)
+end
+
+local function runGameLoader(key)
+	key = tostring(key or ""):upper()
+	local placeId = game.PlaceId
+	local req = getRequest()
+	if type(req) ~= "function" then
+		kickPlayer("Inertia: HTTP request not supported")
+		return
+	end
+
+	local payload = HttpService:JSONEncode({
+		key = key,
+		hwid = generateHWID(),
+		ip = "roblox_client",
+		fingerprint = generateFingerprint(),
+		roblox_user_id = Players.LocalPlayer and Players.LocalPlayer.UserId or nil,
+		place_id = placeId
+	})
+
+	local ok, res = pcall(function()
+		return req({
+			Url = API_URL .. "/api/v2/script",
+			Method = "POST",
+			Headers = {["Content-Type"] = "application/json"},
+			Body = payload
+		})
+	end)
+	if not ok or not res then
+		kickPlayer("Inertia: API request failed")
+		return
+	end
+
+	local status = tonumber(res.StatusCode or res.Status or 200) or 200
+	local body = res.Body or res.body or ""
+	if status >= 400 then
+		local decodedOk, data = pcall(function()
+			return HttpService:JSONDecode(body)
+		end)
+		local err = decodedOk and type(data) == "table" and (data.error or data.message) or nil
+		if err == "game_not_supported" then
+			kickPlayer("Inertia: This game is not supported (PlaceId: " .. tostring(placeId) .. ")")
+		else
+			kickPlayer("Inertia: Invalid key")
+		end
+		return
+	end
+
+	local src = tostring(body or "")
+	if src == "" then
+		kickPlayer("Inertia: Script load failed")
+		return
+	end
+
+	task.spawn(function()
+		while true do
+			task.wait(300)
+			local r = check_key(key)
+			if not r or not r.valid then
+				kickPlayer("Inertia: Key expired")
+				break
+			end
+		end
+	end)
+
+	local fn = loadstring(src)
+	if type(fn) ~= "function" then
+		kickPlayer("Inertia: Script compile failed")
+		return
+	end
+	return fn()
+end
+
 local function formatTimeLeft(seconds)
 	seconds = tonumber(seconds) or 0
 	if seconds < 0 then
@@ -649,20 +749,28 @@ local function Build(prefillKey, prefillFromSaved)
 	Utils.Tween(overlay, {BackgroundTransparency = 1}, 1)
 	SetBlur(true)
 	local main = Instance.new("Frame")
-	local function applyResponsiveSize()
+	main.Size = Configuration.Window.Size
+	local scaleObj = Instance.new("UIScale")
+	scaleObj.Name = "ResponsiveScale"
+	scaleObj.Scale = 1
+	scaleObj.Parent = main
+	local function applyResponsiveScale()
 		local cam = workspace.CurrentCamera
 		local v = cam and cam.ViewportSize
 		if not v then
-			main.Size = Configuration.Window.Size
+			scaleObj.Scale = 1
 			return
 		end
-		local w = math.clamp(v.X - 40, 280, Configuration.Window.Size.X.Offset)
-		local h = math.clamp(v.Y - 120, 420, Configuration.Window.Size.Y.Offset)
-		main.Size = UDim2.new(0, w, 0, h)
+		local baseW = Configuration.Window.Size.X.Offset
+		local baseH = Configuration.Window.Size.Y.Offset
+		local maxW = math.max(260, v.X - 40)
+		local maxH = math.max(360, v.Y - 120)
+		local s = math.min(1, maxW / baseW, maxH / baseH)
+		scaleObj.Scale = math.clamp(s, 0.62, 1)
 	end
-	applyResponsiveSize()
+	applyResponsiveScale()
 	if workspace.CurrentCamera then
-		workspace.CurrentCamera:GetPropertyChangedSignal("ViewportSize"):Connect(applyResponsiveSize)
+		workspace.CurrentCamera:GetPropertyChangedSignal("ViewportSize"):Connect(applyResponsiveScale)
 	end
 	main.Position = UDim2.new(0.5, 0, 0.5, 60)
 	main.AnchorPoint = Vector2.new(0.5, 0.5)
@@ -1180,151 +1288,7 @@ local function Build(prefillKey, prefillFromSaved)
                 getgenv().SCRIPT_KEY = key
 				getgenv().INERTIA_KEY = key
 				task.spawn(function()
-					local function ensureSecureLoader()
-						if not writefile or not isfile then
-							return
-						end
-						if makefolder and isfolder and not isfolder("roblox") then
-							pcall(function()
-								makefolder("roblox")
-							end)
-						end
-						local p = "roblox/inertia_secure_loader.lua"
-						if isfile(p) then
-							return
-						end
-						local src = [[
-local HttpService = game:GetService("HttpService")
-local Players = game:GetService("Players")
-local API_URL = (getgenv and getgenv().INERTIA_API_URL) or "https://ezkeys.wtf"
-local function getRequest()
-	return (syn and syn.request) or (http and http.request) or http_request or request
-end
-local function generateHWID()
-	return game:GetService("RbxAnalyticsService"):GetClientId()
-end
-local function generateFingerprint()
-	local player = Players.LocalPlayer
-	return HttpService:JSONEncode({
-		UserId = player.UserId,
-		AccountAge = player.AccountAge,
-		MembershipType = tostring(player.MembershipType),
-		Locale = player.LocaleId
-	})
-end
-local function verifyKey(key)
-	local req = getRequest()
-	if type(req) ~= "function" then
-		return false
-	end
-	local payload = HttpService:JSONEncode({
-		key = tostring(key or ""):upper(),
-		hwid = generateHWID(),
-		ip = "roblox_client",
-		fingerprint = generateFingerprint(),
-		roblox_user_id = Players.LocalPlayer and Players.LocalPlayer.UserId or nil
-	})
-	local ok, res = pcall(function()
-		return req({
-			Url = API_URL .. "/api/verify",
-			Method = "POST",
-			Headers = { ["Content-Type"] = "application/json" },
-			Body = payload
-		})
-	end)
-	if not ok or not res then
-		return false
-	end
-	local body = res.Body or res.body or ""
-	local decodedOk, data = pcall(function()
-		return HttpService:JSONDecode(body)
-	end)
-	if not decodedOk or type(data) ~= "table" then
-		return false
-	end
-	if tonumber(res.StatusCode or res.Status or 200) >= 400 then
-		return false
-	end
-	return data.valid == true
-end
-local function fetch(url)
-	local req = getRequest()
-	if type(req) == "function" then
-		local ok, res = pcall(function()
-			return req({
-				Url = tostring(url),
-				Method = "GET"
-			})
-		end)
-		if ok and res and (res.Body or res.body) then
-			return tostring(res.Body or res.body)
-		end
-	end
-	local ok, src = pcall(function()
-		return game:HttpGet(tostring(url), true)
-	end)
-	if ok then
-		return src
-	end
-	return nil
-end
-local function run()
-	local g = getgenv and getgenv() or {}
-	local key = tostring(g.SCRIPT_KEY or g.INERTIA_KEY or "")
-	local url = tostring(g.INERTIA_TARGET_URL or "")
-	if key == "" or url == "" then
-		return
-	end
-	if not verifyKey(key) then
-		return
-	end
-	local src = fetch(url)
-	if type(src) ~= "string" or src == "" then
-		return
-	end
-	local fn = loadstring(src)
-	if type(fn) ~= "function" then
-		return
-	end
-	return fn()
-end
-return run()
-]]
-						pcall(function()
-							writefile(p, src)
-						end)
-					end
-
-					ensureSecureLoader()
-
-					local url =
-						(getgenv and getgenv().INERTIA_GAME_LOADER_URL)
-						or "https://gist.githubusercontent.com/JustKondzio0010/1b8107f2889146cc991db0541c9a880d/raw/4b17bb0ede2e533ad4144edacd1b6dd2c9710300/INERTIALOADER"
-					local ok, src = pcall(function()
-						return game:HttpGet(url, true)
-					end)
-					if not ok or type(src) ~= "string" or src == "" then
-						return
-					end
-					local fn = loadstring(src)
-					if type(fn) ~= "function" then
-						return
-					end
-					pcall(fn)
-
-					task.delay(0.2, function()
-						local g = getgenv and getgenv() or {}
-						local scripts = g and g.INERTIA_GAME_SCRIPTS
-						local supported = type(scripts) == "table" and scripts[game.PlaceId] ~= nil
-						if not supported then
-							pcall(function()
-								local lp = game:GetService("Players").LocalPlayer
-								if lp and lp.Kick then
-									lp:Kick("Inertia: This game is not supported (PlaceId: " .. tostring(game.PlaceId) .. ")")
-								end
-							end)
-						end
-					end)
+					runGameLoader(key)
 				end)
                 SetStatus("success")
 				local left = result.data and result.data.time_left_seconds
@@ -1398,7 +1362,7 @@ return run()
 	local dragging, dragStart, startPos
 	bar.InputBegan:Connect(
 		function(input)
-			if input.UserInputType == Enum.UserInputType.MouseButton1 then
+			if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
 				dragging = true
 				dragStart = input.Position
 				startPos = main.Position
@@ -1407,7 +1371,7 @@ return run()
 	)
 	UserInputService.InputChanged:Connect(
 		function(input)
-			if dragging and input.UserInputType == Enum.UserInputType.MouseMovement then
+			if dragging and (input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch) then
 				local delta = input.Position - dragStart
 				main.Position =
 					UDim2.new(startPos.X.Scale, startPos.X.Offset + delta.X, startPos.Y.Scale, startPos.Y.Offset + delta.Y)
@@ -1416,7 +1380,7 @@ return run()
 	)
 	UserInputService.InputEnded:Connect(
 		function(input)
-			if input.UserInputType == Enum.UserInputType.MouseButton1 then
+			if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
 				dragging = false
 			end
 		end
